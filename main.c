@@ -98,8 +98,8 @@ void scroll() {
 void draw_status_bar() {
 	char *status = (char*)malloc(csbi.dwSize.X);
 	//memset(status, ' ', csbi.dwSize.X);
-	double perc = (double)csbi.dwCursorPosition.Y / (double)nrows;
-	size_t len = snprintf(status, csbi.dwSize.X, "%s %dL %d,%d (%.1f)",
+	double perc = 100.0 * (double)csbi.dwCursorPosition.Y / (double)nrows;
+	size_t len = snprintf(status, csbi.dwSize.X, "%s %dL %d,%d (%.1f%%)",
 			curfile, nrows, csbi.dwCursorPosition.Y, csbi.dwCursorPosition.X, perc);
 	
 	FillConsoleOutputCharacterA(con, ' ', csbi.dwSize.X, (COORD){0, csbi.dwSize.Y}, &written);
