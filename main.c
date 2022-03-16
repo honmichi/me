@@ -95,19 +95,24 @@ void scroll() {
         col_offset = csbi.dwCursorPosition.X - csbi.dwSize.X + 1;
 }
 
-void draw_status_bar1(string_t *s) {
-	size_t len = 0;
+void draw_status_bar() {
 	char *status = (char*)malloc(csbi.dwSize.X);
-	len = snprintf(status, csbi.dwSize.X, "%s %dL", curfile, nrows);
-
-	if (len > csbi.dwSize.X) len = csbi.dwSize.X;
-	str_append(s, status, len);
-	while (len < csbi.dwSize.X) {
-		str_append(s, " ", 1);
-		len++;
+	//memset(status, ' ', csbi.dwSize.X);
+	double perc = (double)csbi.dwCursorPosition.Y / (double)nrows;
+	size_t len = snprintf(status, csbi.dwSize.X, "%s %dL %d,%d (%.1f)",
+			curfile, nrows, csbi.dwCursorPosition.Y, csbi.dwCursorPosition.X, perc);
+	
+	FillConsoleOutputCharacterA(con, ' ', csbi.dwSize.X, (COORD){0, csbi.dwSize.Y}, &written);
+	
+	int i;
+	for (i = 0; i < len; ++i) {
+		FillConsoleOutputCharacterA(con, status[i], 1, (COORD){i, csbi.dwSize.Y}, &written);
 	}
+	
+	//FillConsoleOutputCharacterA(con, '=', csbi.dwSize.X, (COORD){0, csbi.dwSize.Y}, &written);
+	
+	//WriteConsoleA(con, status, csbi.dwSize.X, &written, NULL);
 }
-void draw_status_bar(string_t *s) {}
 
 /* rewrite this to use 1 write call */
 /* implement double buffering read/writeconsoleoutput apis */
@@ -129,11 +134,10 @@ void refresh() {
             str_append(&buf, rows[filerow].rbuf + col_offset, len);
         }
         
-        //if (y < csbi.dwSize.Y - 1)
-	str_append(&buf, "\r\n", 2);
+        if (y < csbi.dwSize.Y - 1)
+		str_append(&buf, "\r\n", 2);
     }
-
-    draw_status_bar(&buf);
+    //str_append(&buf, "\r\n", 2);
 
     SetConsoleCursorPosition(dbcon, (COORD){0, 0});
     WriteConsoleA(dbcon, buf.buf, buf.len, &written, NULL);
@@ -147,8 +151,11 @@ void refresh() {
     //show_cursor();
     ReadConsoleOutputA(dbcon, ci, (COORD){csbi.dwSize.X, csbi.dwSize.Y}, (COORD){0, 0}, &sr); //
     WriteConsoleOutputA(con, ci, (COORD){csbi.dwSize.X, csbi.dwSize.Y}, (COORD){0, 0}, &sr); //
+    SetConsoleCursorPosition(con, (COORD){0, csbi.dwSize.Y});
+    draw_status_bar();
     SetConsoleCursorPosition(con, (COORD){rx - col_offset, csbi.dwCursorPosition.Y - row_offset});
     str_free(&buf);
+    free(ci);
     //show_cursor();
 }
 
@@ -305,8 +312,9 @@ int main(int argc, char **argv) {
     SetConsoleTitleA("file (path) *");
 
     GetConsoleMode(con, &old_mode);
-    new_mode = old_mode & (~ENABLE_LINE_INPUT) & (~ENABLE_PROCESSED_INPUT);
-    new_mode &= ~0x200;
+    new_mode = old_mode & (~ENABLE_PROCESSED_INPUT);
+    new_mode |= 0x0080 | ENABLE_PROCESSED_OUTPUT;
+    //new_mode = old_mode & (~ENABLE_LINE_INPUT) & (~ENABLE_PROCESSED_INPUT) & (~0x200);
     SetConsoleMode(con, new_mode);
     SetConsoleCtrlHandler(ctrl_event_proc, TRUE);
 
