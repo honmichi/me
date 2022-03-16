@@ -12,6 +12,7 @@ later on:
 
 */
 #define BUF_SIZE 65536
+#define TAB_SIZE 8
 
 #define ESC "\x1b"
 #define CSI "\x1b["
@@ -21,14 +22,21 @@ later on:
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 typedef struct row {
+    /* raw characters */
     char *buf;
     size_t size;
+    /* human-readable characters */
+    char *rbuf;
+    size_t rsize;
 } row_t;
 
 row_t *rows; /* the rows */
 size_t nrows = 0; /* number of rows */
 
 size_t row_offset = 0, col_offset = 0; /*  */
+size_t rx = 0;
+
+char *curfile = NULL;
 
 
 HANDLE hstdin, con, dbcon;
@@ -56,7 +64,26 @@ void show_cursor() {
     SetConsoleCursorInfo(con, &cci);
 }
 
+size_t calc_rx(row_t *r, size_t cx) {
+	size_t my_rx = 0;
+	int j;
+	for (j = 0; j < cx; ++j) {
+		if (r->buf[j] == '\t') {
+			my_rx += (TAB_SIZE - 1) - (my_rx % TAB_SIZE);
+		}
+		my_rx++;
+	}
+	return my_rx;
+}
+
+
 void scroll() {
+    rx = 0;
+    if (csbi.dwCursorPosition.Y < nrows) {
+    	rx = calc_rx(&rows[csbi.dwCursorPosition.Y], csbi.dwCursorPosition.X);
+
+    }
+
     if (csbi.dwCursorPosition.Y < row_offset)
         row_offset = csbi.dwCursorPosition.Y;
     if (csbi.dwCursorPosition.Y >= row_offset + csbi.dwSize.Y)
@@ -67,6 +94,20 @@ void scroll() {
     if (csbi.dwCursorPosition.X >= col_offset + csbi.dwSize.X)
         col_offset = csbi.dwCursorPosition.X - csbi.dwSize.X + 1;
 }
+
+void draw_status_bar1(string_t *s) {
+	size_t len = 0;
+	char *status = (char*)malloc(csbi.dwSize.X);
+	len = snprintf(status, csbi.dwSize.X, "%s %dL", curfile, nrows);
+
+	if (len > csbi.dwSize.X) len = csbi.dwSize.X;
+	str_append(s, status, len);
+	while (len < csbi.dwSize.X) {
+		str_append(s, " ", 1);
+		len++;
+	}
+}
+void draw_status_bar(string_t *s) {}
 
 /* rewrite this to use 1 write call */
 /* implement double buffering read/writeconsoleoutput apis */
@@ -82,27 +123,32 @@ void refresh() {
         if (filerow >= nrows) {
             str_append(&buf, "~", 1);
         } else {
-            int len = rows[filerow].size - col_offset;
+            int len = rows[filerow].rsize - col_offset;
             if (len < 0) len = 0;
             if (len > csbi.dwSize.X) len = csbi.dwSize.X;
-            str_append(&buf, rows[filerow].buf + col_offset, len);
+            str_append(&buf, rows[filerow].rbuf + col_offset, len);
         }
         
-        if (y < csbi.dwSize.Y - 1) str_append(&buf, "\r\n", 2);
+        //if (y < csbi.dwSize.Y - 1)
+	str_append(&buf, "\r\n", 2);
     }
+
+    draw_status_bar(&buf);
 
     SetConsoleCursorPosition(dbcon, (COORD){0, 0});
     WriteConsoleA(dbcon, buf.buf, buf.len, &written, NULL);
     
-    CHAR_INFO *ci = (CHAR_INFO*)malloc(csbi.dwSize.X * csbi.dwSize.Y * sizeof(CHAR_INFO));
+    CHAR_INFO *ci = (CHAR_INFO*)malloc(csbi.dwSize.X * (csbi.dwSize.Y) * sizeof(CHAR_INFO)); //
     SMALL_RECT sr;
     sr.Top = 0;
     sr.Left = 0;
-    sr.Bottom = csbi.dwSize.Y - 1;
+    sr.Bottom = csbi.dwSize.Y - 1; //
     sr.Right = csbi.dwSize.X - 1;
-    ReadConsoleOutputA(dbcon, ci, (COORD){csbi.dwSize.X, csbi.dwSize.Y}, (COORD){0, 0}, &sr);
-    WriteConsoleOutputA(con, ci, (COORD){csbi.dwSize.X, csbi.dwSize.Y}, (COORD){0, 0}, &sr);
-    SetConsoleCursorPosition(con, (COORD){csbi.dwCursorPosition.X - col_offset, csbi.dwCursorPosition.Y - row_offset});
+    //show_cursor();
+    ReadConsoleOutputA(dbcon, ci, (COORD){csbi.dwSize.X, csbi.dwSize.Y}, (COORD){0, 0}, &sr); //
+    WriteConsoleOutputA(con, ci, (COORD){csbi.dwSize.X, csbi.dwSize.Y}, (COORD){0, 0}, &sr); //
+    SetConsoleCursorPosition(con, (COORD){rx - col_offset, csbi.dwCursorPosition.Y - row_offset});
+    str_free(&buf);
     //show_cursor();
 }
 
@@ -113,13 +159,17 @@ void read_key_event() {
     if (ir.EventType != KEY_EVENT) return;
     ker = ir.Event.KeyEvent;
     if (!ker.bKeyDown) return;
+    int shift_pressed = (ker.dwControlKeyState & SHIFT_PRESSED);
     //printf("%d | %d\n", ker.uChar.AsciiChar, ker.wVirtualKeyCode);
     row_t *r = (csbi.dwCursorPosition.Y >= nrows) ? NULL : &rows[csbi.dwCursorPosition.Y];
+    int i;
     switch (ker.uChar.AsciiChar) {
         case CTRL_KEY('q'):
             cls();
+            SetConsoleActiveScreenBuffer(GetStdHandle(STD_OUTPUT_HANDLE));
             exit(0);
             break;
+        case CTRL_KEY('s'): break;
         case 0:
             switch (ker.wVirtualKeyCode) {
                 case VK_LEFT:
@@ -134,38 +184,75 @@ void read_key_event() {
                 case VK_DOWN:
                     if (csbi.dwCursorPosition.Y < nrows) csbi.dwCursorPosition.Y++;
                     break;
-                case VK_PRIOR: csbi.dwCursorPosition.Y = 0; break;
-                case VK_NEXT: csbi.dwCursorPosition.Y = csbi.dwSize.Y - 1; break;
+                case VK_PRIOR:
+		    csbi.dwCursorPosition.Y = row_offset;
+		    for (i = 0; i < csbi.dwSize.Y; ++i) {
+		    	if (csbi.dwCursorPosition.Y != 0) csbi.dwCursorPosition.Y--;
+		    }
+		    break;
+		case VK_NEXT:
+		    csbi.dwCursorPosition.Y = row_offset + csbi.dwSize.Y - 1;
+		    if (csbi.dwCursorPosition.Y > nrows) csbi.dwCursorPosition.Y = nrows;
+		    for (i = 0; i < csbi.dwSize.Y; ++i) {
+		    	if (csbi.dwCursorPosition.Y < nrows) csbi.dwCursorPosition.Y++;
+		    }
+		    break;
                 case VK_HOME: csbi.dwCursorPosition.X = 0; break;
-                case VK_END: csbi.dwCursorPosition.X = csbi.dwSize.X - 1; break;
+                case VK_END:
+		    if (r) {
+		    	if (csbi.dwCursorPosition.Y < nrows) {
+				csbi.dwCursorPosition.X = r->size;
+			}
+		    }
+		    break;
             }
             r = (csbi.dwCursorPosition.Y >= nrows) ? NULL : &rows[csbi.dwCursorPosition.Y];
             size_t rowlen = r ? r->size : 0;
             if (csbi.dwCursorPosition.X > rowlen) csbi.dwCursorPosition.X = rowlen;
-
-
             break;
     }
 }
 
-char *getline(ssize_t *size, FILE *stream) {
-	int c, growby = 80;
+char *getline1(ssize_t *size, FILE *stream) {
+    int c, growby = 80;
     ssize_t i = 0, linebufsize = 0;
-	char *linebuf = NULL;
+    char *linebuf = NULL;
 
-	while (1) {
-		c = fgetc(stream);
-		if (c == EOF) break;
-		while (i > linebufsize - 2)
-			linebuf = (char*)realloc(linebuf, linebufsize += growby);
+    while (1) {
+        c = fgetc(stream);
+        if (c == EOF) break;
+        while (i > linebufsize - 2)
+            linebuf = (char*)realloc(linebuf, linebufsize += growby);
         linebuf[i++] = (char)c;
         if (c == '\n' || c == '\0') break;
         
-	}
-	if (i == 0) return NULL;
-	linebuf[i] = 0;
+    }
+    if (i == 0) return NULL;
+    linebuf[i] = 0;
     *size = i;
-	return linebuf;
+    return linebuf;
+}
+
+void update_row(row_t *r) {
+	size_t tabs = 0;
+	int j, ix = 0;
+	for (j = 0; j < r->size; ++j) {
+		if (r->buf[j] == '\t') tabs++;
+	}
+
+	free(r->rbuf);
+	r->rbuf = (char*)malloc(r->size + tabs * (TAB_SIZE - 1) + 1);
+	
+	for (j = 0; j < r->size; ++j) {
+		if (r->buf[j] == '\t') {
+			r->rbuf[ix++] = ' ';
+			while (ix % 8 != 0) r->rbuf[ix++] = ' ';
+		} else {
+			r->rbuf[ix++] = r->buf[j];
+		}
+	}
+	r->rbuf[ix] = '\0';
+	r->rsize = ix;
 }
 
 void append_row(char *s, size_t len) {
@@ -176,23 +263,29 @@ void append_row(char *s, size_t len) {
     rows[last_row].buf = (char*)malloc(len + 1);
     memcpy(rows[last_row].buf, s, len);
     rows[last_row].buf[len] = '\0';
+    rows[last_row].rsize = 0;
+    rows[last_row].rbuf = NULL;
+    update_row(&rows[last_row]);
     nrows++;
 }
 
 void open_file(char *filename) {
+    free(curfile);
+    curfile = strdup(filename);
+    
     FILE *fp = fopen(filename, "r");
     if (!fp) exit(1);
 
     char *line = NULL;
     ssize_t linelen = 0;
 
-    while ((line = getline(&linelen, fp)) != NULL) {
+    while ((line = getline1(&linelen, fp)) != NULL) {
         while (linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) {
             line[linelen - 1] = '\0';
             linelen--;
         }
         append_row(line, linelen);
-        printf("[%d] %s\n", linelen, line);
+        //printf("[%d] %s\n", linelen, line);
     }
 }
 
@@ -209,10 +302,11 @@ int main(int argc, char **argv) {
         CONSOLE_TEXTMODE_BUFFER, NULL);
     SetConsoleActiveScreenBuffer(con);
     
-    SetConsoleTitleA("No file");
+    SetConsoleTitleA("file (path) *");
 
     GetConsoleMode(con, &old_mode);
-    new_mode = old_mode | ~0x0200 | ~ENABLE_LINE_INPUT | ~ENABLE_PROCESSED_INPUT;
+    new_mode = old_mode & (~ENABLE_LINE_INPUT) & (~ENABLE_PROCESSED_INPUT);
+    new_mode &= ~0x200;
     SetConsoleMode(con, new_mode);
     SetConsoleCtrlHandler(ctrl_event_proc, TRUE);
 
@@ -224,6 +318,8 @@ int main(int argc, char **argv) {
 
     SetConsoleCursorPosition(con, (COORD){0, 0});
     
+    csbi.dwSize.Y -= 1;
+
     if (argc >= 2)
         open_file(argv[1]);
 
