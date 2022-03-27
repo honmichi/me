@@ -1,2 +1,3 @@
 all:
-	gcc -O3 -static-libgcc -std=c99 -o ed main.c
+	gcc -Wno-incompatible-pointer-types -O3 -static-libgcc -o me main.c
+	strip -s me.exe
